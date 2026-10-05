@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://GANTI-NAMA-WORKER.GANTI-SUBDOMAIN.workers.dev/api/:path*"
+      "destination": "https://ketupat-api.ketupatbot.workers.dev/api/:path*"
     },
     {
       "source": "/uploads/:path*",
-      "destination": "https://GANTI-NAMA-WORKER.GANTI-SUBDOMAIN.workers.dev/uploads/:path*"
+      "destination": "https://ketupat-api.ketupatbot.workers.dev/uploads/:path*"
     },
     {
       "source": "/((?!api/|uploads/|assets/).*)",
