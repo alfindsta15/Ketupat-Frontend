@@ -80,9 +80,41 @@ export const fmtSize = (n?: number | null) =>
 
 export const ORDER_STATUSES = [
   "WAITING_BRIEF", "WAITING_QUOTATION", "WAITING_PAYMENT", "PAYMENT_REVIEW",
-  "PAID", "PROCESSING", "REVIEW", "COMPLETED", "CANCELLED",
+  "PAID", "PROCESSING", "WAITING_FINAL_PAYMENT", "REVIEW", "COMPLETED", "CANCELLED",
 ];
 export const SERVICE_LABEL: Record<string, string> = {
   TUGAS: "📚 Joki Tugas", PPT: "🎨 PPT", CV: "📄 CV", CODING: "💻 Coding",
   WEBSITE: "🌐 Website", MOBILE_APP: "📱 Mobile App", KONSULTASI: "💬 Konsultasi",
 };
+
+/** Unduh file lewat endpoint admin (butuh token): file hasil terkunci tidak punya URL publik. */
+export async function downloadAuthed(path: string, filename: string) {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, data.message || `Unduhan gagal (${res.status})`);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+/** URL publik (tanpa token admin) ke endpoint API, mis. unduhan hasil untuk customer. */
+export const apiUrl = (path: string) => `${API_BASE}/api${path}`;
+
+/** Ambil file/gambar dari endpoint admin (butuh token) dan kembalikan object URL untuk <img>. */
+export async function fetchBlobUrl(path: string): Promise<string> {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/api${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, data.message || `Gagal memuat (${res.status})`);
+  }
+  return URL.createObjectURL(await res.blob());
+}

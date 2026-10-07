@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fileUrl, rupiah, fmtDate } from "../lib/api";
-import { Badge, BottomSheet, Empty, Flash, PageHeader } from "../components/ui";
+import { Badge, BottomSheet, Empty, Flash, KindTag, PageHeader } from "../components/ui";
 
 type Action = "verify" | "reject";
-interface Dialog { id: number; action: Action; orderNumber: string; amount: number }
+interface Dialog { id: number; action: Action; orderNumber: string; amount: number; kind?: string; manual?: boolean }
+
+const kindLabel = (kind?: string) => (kind === "FINAL" ? "Pelunasan 50%" : kind === "DP" ? "DP 50%" : "Pembayaran");
+const kindEffect = (kind?: string) =>
+  kind === "FINAL"
+    ? "Setelah lunas: file hasil terbuka untuk customer & pesanan SELESAI."
+    : kind === "DP"
+    ? "Setelah lunas: pesanan masuk tahap PENGERJAAN (pelunasan 50% ditagih setelah pratinjau hasil)."
+    : "Setelah lunas: pesanan masuk tahap PENGERJAAN.";
 
 const FILTERS: { value: string; label: string }[] = [
   { value: "", label: "Semua" },
@@ -52,9 +60,9 @@ export default function Payments() {
   const rows = useMemo(() => (status ? all.filter((p) => p.status === status) : all), [all, status]);
   const paidTotal = useMemo(() => all.filter((p) => p.status === "PAID").reduce((s, p) => s + (p.amount ?? 0), 0), [all]);
 
-  const openDialog = (p: any, action: Action) => {
+  const openDialog = (p: any, action: Action, manual = false) => {
     setNote("");
-    setDialog({ id: p.id, action, orderNumber: p.order.orderNumber, amount: p.amount });
+    setDialog({ id: p.id, action, orderNumber: p.order.orderNumber, amount: p.amount, kind: p.kind, manual });
   };
 
   const submit = async () => {
@@ -63,10 +71,10 @@ export default function Payments() {
     setBusyId(id);
     setFlash(null);
     try {
-      await api(`/payments/${id}/${action}`, { method: "POST", json: { note: note.trim() || undefined } });
+      await api(`/payments/${id}/${action}`, { method: "POST", json: { note: note.trim() || undefined, force: dialog.manual ? true : undefined } });
       setFlash({
         ok: true,
-        text: action === "verify" ? "Ditandai lunas & customer diberi tahu lewat WhatsApp." : "Ditolak & customer diminta upload ulang lewat WhatsApp.",
+        text: action === "verify" ? `${kindLabel(dialog.kind)} ditandai lunas & customer diberi tahu lewat WhatsApp.` : "Ditolak & customer diminta upload ulang lewat WhatsApp.",
       });
       setDialog(null);
       await load(true);
@@ -117,7 +125,7 @@ export default function Payments() {
                 <div className="text-[11px] text-slate-400">{fmtDate(p.createdAt)}</div>
               </div>
               <div className="text-right">
-                <div className="font-bold text-navy-900">{rupiah(p.amount)}</div>
+                <div className="font-bold text-navy-900">{rupiah(p.amount)}<KindTag kind={p.kind} /></div>
                 <div className="mt-1 flex flex-wrap justify-end gap-1"><Badge value={p.status} /></div>
               </div>
             </div>
@@ -133,9 +141,15 @@ export default function Payments() {
               <div className="ml-auto"><Badge value={p.order.status} /></div>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <button className="btn-primary" disabled={busyId === p.id || p.status === "PAID"} onClick={() => openDialog(p, "verify")}>✓ Lunas</button>
-              <button className="btn-danger" disabled={busyId === p.id || p.status === "REJECTED" || p.status === "PAID"} onClick={() => openDialog(p, "reject")}>✕ Tolak</button>
+              <button className="btn-primary" disabled={busyId === p.id || p.status !== "REVIEW"} onClick={() => openDialog(p, "verify")}>✓ Lunas {p.kind === "FINAL" ? "pelunasan" : p.kind === "DP" ? "DP" : ""}</button>
+              <button className="btn-danger" disabled={busyId === p.id || p.status !== "REVIEW"} onClick={() => openDialog(p, "reject")}>✕ Tolak bukti</button>
             </div>
+            {p.status === "PENDING" && <p className="mt-2 text-xs text-slate-400">Menunggu customer upload bukti {kindLabel(p.kind)}.</p>}
+            {p.status === "REJECTED" && <p className="mt-2 text-xs text-slate-400">Bukti ditolak, menunggu upload ulang.</p>}
+            {(p.status === "PENDING" || p.status === "REJECTED") && (
+              <button className="mt-1 text-xs font-semibold text-slate-500 underline" disabled={busyId === p.id} onClick={() => openDialog(p, "verify", true)}>Tandai lunas manual (tanpa bukti)</button>
+            )}
+            {p.status === "PAID" && <p className="mt-2 text-xs text-emerald-600">✅ {kindLabel(p.kind)} sudah lunas.</p>}
           </li>
         ))}
       </ul>
@@ -153,7 +167,7 @@ export default function Payments() {
               <tr key={p.id} className="border-b last:border-0 hover:bg-slate-50">
                 <td className="td font-semibold text-electric"><Link to={`/orders/${p.orderId}`}>#{p.order.orderNumber}</Link></td>
                 <td className="td">{p.order.user?.name ?? p.order.user?.phoneNumber}</td>
-                <td className="td">{rupiah(p.amount)}</td>
+                <td className="td">{rupiah(p.amount)}<KindTag kind={p.kind} /></td>
                 <td className="td"><Badge value={p.status} /></td>
                 <td className="td"><Badge value={p.order.status} /></td>
                 <td className="td text-slate-500">{fmtDate(p.createdAt)}</td>
@@ -174,9 +188,12 @@ export default function Payments() {
                 </td>
                 <td className="td">
                   <div className="flex gap-2">
-                    <button className="btn-primary !px-2 !py-1 text-xs" disabled={busyId === p.id || p.status === "PAID"} onClick={() => openDialog(p, "verify")}>✓ Lunas</button>
-                    <button className="btn-danger !px-2 !py-1 text-xs" disabled={busyId === p.id || p.status === "REJECTED" || p.status === "PAID"} onClick={() => openDialog(p, "reject")}>✕ Tolak</button>
+                    <button className="btn-primary !px-2 !py-1 text-xs" disabled={busyId === p.id || p.status !== "REVIEW"} title={p.status !== "REVIEW" ? "Hanya bukti yang sudah diupload customer yang bisa diverifikasi" : ""} onClick={() => openDialog(p, "verify")}>✓ Lunas</button>
+                    <button className="btn-danger !px-2 !py-1 text-xs" disabled={busyId === p.id || p.status !== "REVIEW"} onClick={() => openDialog(p, "reject")}>✕ Tolak</button>
                   </div>
+                  {(p.status === "PENDING" || p.status === "REJECTED") && (
+                    <button className="mt-1 text-[11px] font-semibold text-slate-500 underline" disabled={busyId === p.id} onClick={() => openDialog(p, "verify", true)}>Lunas manual</button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -189,11 +206,14 @@ export default function Payments() {
       <BottomSheet
         open={!!dialog}
         onClose={() => busyId === null && setDialog(null)}
-        title={dialog ? `${dialog.action === "verify" ? "Tandai lunas" : "Tolak bukti pembayaran"} • #${dialog.orderNumber}` : undefined}
+        title={dialog ? `${dialog.action === "verify" ? (dialog.manual ? "Lunas manual" : "Tandai lunas") : "Tolak bukti"} ${kindLabel(dialog.kind)} • #${dialog.orderNumber}` : undefined}
       >
         {dialog && (
           <>
             <p className="text-sm text-slate-500">Nominal {rupiah(dialog.amount)}. Customer otomatis diberi tahu lewat WhatsApp.</p>
+            {dialog.action === "verify" && <p className="mt-2 rounded-lg bg-emerald-50 p-2 text-xs text-emerald-700">{kindEffect(dialog.kind)}</p>}
+            {dialog.manual && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-700">⚠️ Tanpa bukti dari customer. Lanjutkan hanya bila pembayaran memang sudah kamu terima (tunai/transfer langsung).</p>}
+            {dialog.action === "reject" && <p className="mt-2 rounded-lg bg-red-50 p-2 text-xs text-red-600">Customer diminta upload ulang bukti {kindLabel(dialog.kind)}. Status pesanan kembali menunggu pembayaran.</p>}
             <label className="label mt-4">
               {dialog.action === "verify" ? "Catatan untuk customer (opsional)" : "Alasan penolakan (opsional, ikut terkirim)"}
             </label>
@@ -201,7 +221,7 @@ export default function Payments() {
             <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:justify-end">
               <button className="btn-ghost" onClick={() => setDialog(null)} disabled={busyId === dialog.id}>Batal</button>
               <button className={dialog.action === "verify" ? "btn-primary" : "btn-danger"} onClick={submit} disabled={busyId === dialog.id}>
-                {busyId === dialog.id ? "Memproses…" : dialog.action === "verify" ? "Konfirmasi Lunas" : "Tolak & Kirim"}
+                {busyId === dialog.id ? "Memproses…" : dialog.action === "verify" ? `Konfirmasi Lunas ${kindLabel(dialog.kind)}` : "Tolak & Kirim"}
               </button>
             </div>
           </>

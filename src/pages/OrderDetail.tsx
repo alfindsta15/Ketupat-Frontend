@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, fileUrl, rupiah, fmtDate, fmtSize, ORDER_STATUSES, SERVICE_LABEL } from "../lib/api";
-import { Badge, FileButton, Flash, PageHeader } from "../components/ui";
+import { api, downloadAuthed, fileUrl, rupiah, fmtDate, fmtSize, ORDER_STATUSES, SERVICE_LABEL } from "../lib/api";
+import { Badge, FileButton, Flash, KindTag, PageHeader } from "../components/ui";
+import { buildResultPreviews, makeWatermarkedPreview } from "../lib/image";
 
 const REFERENCE_LABELS = ["Referensi", "Catatan tambahan"];
 
@@ -16,6 +17,9 @@ export default function OrderDetail() {
   const [resultLink, setResultLink] = useState("");
   const [resultNote, setResultNote] = useState("");
   const [payNote, setPayNote] = useState("");
+  const [previewFiles, setPreviewFiles] = useState<File[]>([]);
+  const [building, setBuilding] = useState(false);
+  const [previewInfo, setPreviewInfo] = useState("");
   const [flash, setFlash] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -43,10 +47,19 @@ export default function OrderDetail() {
 
   const payment = o.payments?.[0]; // backend mengurutkan terbaru dulu
   const items: any[] = o.items ?? [];
-  const briefItems = items.filter((i) => !REFERENCE_LABELS.includes(i.label) && i.label !== "Catatan hasil");
+  const briefItems = items.filter((i) => !REFERENCE_LABELS.includes(i.label) && i.label !== "Catatan hasil" && i.label !== "Permintaan revisi");
   const referenceItems = items.filter((i) => REFERENCE_LABELS.includes(i.label));
   const resultNotes = items.filter((i) => i.label === "Catatan hasil");
   const refFiles: any[] = (o.files ?? []).filter((f: any) => f.type === "REFERENCE");
+  const kindWord = payment?.kind === "FINAL" ? "Pelunasan 50%" : payment?.kind === "DP" ? "DP 50%" : "Pembayaran";
+  const kindEffect = payment?.kind === "FINAL"
+    ? "Setelah lunas: file hasil terbuka untuk customer & pesanan SELESAI."
+    : "Setelah lunas: pesanan masuk tahap PENGERJAAN" + (payment?.kind === "DP" ? " (pelunasan 50% ditagih setelah pratinjau hasil)." : ".");
+  const revisionItems = items.filter((i) => i.label === "Permintaan revisi");
+  const resultFiles: any[] = (o.files ?? []).filter((f: any) => f.type === "RESULT" || f.type === "PREVIEW");
+  const paidTotal = (o.payments ?? []).filter((p: any) => p.status === "PAID").reduce((sum: number, p: any) => sum + p.amount, 0);
+  const fullyPaid = !!o.price && paidTotal >= o.price;
+  const dpAmount = o.price ? Math.round(o.price / 2) : 0;
 
   const statusCard = (
     <section className="card p-4 md:p-5">
@@ -118,6 +131,18 @@ export default function OrderDetail() {
             )}
           </section>
 
+          {revisionItems.length > 0 && (
+            <section className="card border-amber-300 bg-amber-50 p-4 md:p-5">
+              <h2 className="mb-2 font-bold text-amber-800">✍️ Permintaan Revisi dari Customer ({revisionItems.length})</h2>
+              <ul className="space-y-2 text-sm">
+                {revisionItems.map((i) => (
+                  <li key={i.id} className="rounded-lg bg-white p-3"><div className="whitespace-pre-wrap break-words">{i.value}</div><div className="mt-1 text-[11px] text-slate-400">{fmtDate(i.createdAt)}</div></li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-amber-700">Perbaiki hasilnya, lalu kirim pratinjau terbaru lewat kartu "Hasil Pekerjaan".</p>
+            </section>
+          )}
+
           <section className="card p-4 md:p-5">
             <h2 className="mb-3 font-bold text-navy-900">Pembayaran</h2>
             {!payment && <p className="text-sm text-slate-400">Belum ada pembayaran. Kirim quotation dulu agar tagihan terbentuk.</p>}
@@ -130,18 +155,29 @@ export default function OrderDetail() {
                   </a>
                 ) : <span className="text-sm text-slate-400">Customer belum upload bukti.</span>}
                 <div className="min-w-0 flex-1 space-y-2 text-sm sm:min-w-[220px]">
-                  <div>Nominal: <b>{rupiah(payment.amount)}</b></div>
+                  <div>Nominal: <b>{rupiah(payment.amount)}</b><KindTag kind={payment.kind} /></div>
                   <div>Status: <Badge value={payment.status} /></div>
                   {payment.verifiedAt && <div className="text-slate-500">Diproses {fmtDate(payment.verifiedAt)} oleh {payment.admin?.name ?? "admin"}</div>}
-                  {payment.status !== "PAID" && (
+                  {payment.status === "PAID" && <div className="rounded-lg bg-emerald-50 p-2 text-emerald-700">✅ {kindWord} sudah lunas.</div>}
+                  {payment.status === "REVIEW" && (
                     <>
+                      <p className="rounded-lg bg-slate-50 p-2 text-xs text-slate-600">{kindEffect}</p>
                       <textarea className="input" rows={2} placeholder="Catatan untuk customer / alasan penolakan (opsional)" value={payNote} onChange={(e) => setPayNote(e.target.value)} />
                       <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
-                        <button className="btn-primary" disabled={busy} onClick={() => run(async () => { await api(`/payments/${payment.id}/verify`, { method: "POST", json: { note: payNote || undefined } }); setPayNote(""); }, "Pembayaran diverifikasi & customer diberi tahu.")}>✓ {payment.status === "REVIEW" ? "VERIFIKASI PEMBAYARAN" : "TANDAI LUNAS"}</button>
-                        {payment.status === "REVIEW" && (
-                          <button className="btn-danger" disabled={busy} onClick={() => run(async () => { await api(`/payments/${payment.id}/reject`, { method: "POST", json: { note: payNote || undefined } }); setPayNote(""); }, "Pembayaran ditolak, customer diminta upload ulang.")}>Tolak</button>
-                        )}
+                        <button className="btn-primary" disabled={busy} onClick={() => run(async () => { await api(`/payments/${payment.id}/verify`, { method: "POST", json: { note: payNote || undefined } }); setPayNote(""); }, `${kindWord} diverifikasi & customer diberi tahu.`)}>✓ LUNAS {kindWord.toUpperCase()}</button>
+                        <button className="btn-danger" disabled={busy} onClick={() => run(async () => { await api(`/payments/${payment.id}/reject`, { method: "POST", json: { note: payNote || undefined } }); setPayNote(""); }, "Bukti ditolak, customer diminta upload ulang.")}>✕ Tolak bukti</button>
                       </div>
+                    </>
+                  )}
+                  {(payment.status === "PENDING" || payment.status === "REJECTED") && (
+                    <>
+                      <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-700">
+                        {payment.status === "REJECTED" ? "Bukti ditolak. Menunggu customer upload ulang." : `Menunggu customer upload bukti ${kindWord}.`} Tombol Lunas/Tolak aktif setelah bukti masuk.
+                      </p>
+                      <button className="text-xs font-semibold text-slate-500 underline" disabled={busy}
+                        onClick={() => confirm(`Tandai ${kindWord} LUNAS tanpa bukti? Lakukan hanya bila pembayaran sudah kamu terima langsung.`) && run(async () => { await api(`/payments/${payment.id}/verify`, { method: "POST", json: { force: true } }); }, `${kindWord} ditandai lunas manual.`)}>
+                        Tandai lunas manual (tanpa bukti)
+                      </button>
                     </>
                   )}
                 </div>
@@ -152,7 +188,7 @@ export default function OrderDetail() {
                 <summary className="cursor-pointer text-slate-500">Riwayat pembayaran ({o.payments.length})</summary>
                 <ul className="mt-2 space-y-1">
                   {o.payments.map((p: any) => (
-                    <li key={p.id} className="flex items-center gap-2"><Badge value={p.status} /> {rupiah(p.amount)} <span className="text-xs text-slate-400">{fmtDate(p.createdAt)}</span></li>
+                    <li key={p.id} className="flex items-center gap-2"><Badge value={p.status} /> {rupiah(p.amount)}<KindTag kind={p.kind} /> <span className="text-xs text-slate-400">{fmtDate(p.createdAt)}</span></li>
                   ))}
                 </ul>
               </details>
@@ -183,6 +219,11 @@ export default function OrderDetail() {
             <h2 className="mb-3 font-bold text-navy-900">Quotation</h2>
             <label className="mb-1 block text-xs font-semibold text-slate-500">JUMLAH PEMBAYARAN (Rp)</label>
             <input className="input mb-2" type="number" min="0" value={price} onChange={(e) => setPrice(e.target.value)} />
+            {Number(price) > 0 && (
+              <p className="mb-2 rounded bg-slate-50 p-2 text-xs text-slate-600">
+                DP 50% <b>{rupiah(Math.round(Number(price) / 2))}</b> dibayar di awal • Pelunasan <b>{rupiah(Number(price) - Math.round(Number(price) / 2))}</b> setelah pratinjau hasil.
+              </p>
+            )}
             <label className="mb-1 block text-xs font-semibold text-slate-500">CATATAN (ikut terkirim ke customer)</label>
             <textarea className="input mb-3" rows={3} placeholder="mis. Harga sudah termasuk 1x revisi" value={quoteNote} onChange={(e) => setQuoteNote(e.target.value)} />
             <button className="btn-accent w-full" disabled={busy || !Number(price)} onClick={() => run(() => api(`/orders/${id}/quotation`, { method: "POST", json: { price: Number(price), note: quoteNote || undefined } }), "Quotation dikirim ke customer.")}>💰 Kirim Quotation</button>
@@ -191,31 +232,62 @@ export default function OrderDetail() {
           <div className="hidden lg:block">{statusCard}</div>
 
           <section className="card p-4 md:p-5">
-            <h2 className="mb-3 font-bold text-navy-900">Hasil Pekerjaan</h2>
-            {o.resultUrl && <a href={o.resultUrl} target="_blank" rel="noreferrer" className="mb-2 block break-all text-sm text-electric">{o.resultUrl}</a>}
+            <h2 className="mb-1 font-bold text-navy-900">Hasil Pekerjaan</h2>
+            <p className="mb-3 text-xs text-slate-400">
+              Customer lebih dulu menerima <b>pratinjau</b> (gambar ber-watermark). File asli <b>terkunci</b> dan otomatis terbuka setelah pelunasan 50% diverifikasi.
+            </p>
+
+            {o.resultUrl && /^https?:/i.test(o.resultUrl) && <a href={o.resultUrl} target="_blank" rel="noreferrer" className="mb-2 block break-all text-sm text-electric">🔗 {o.resultUrl}</a>}
+            {resultFiles.length > 0 && (
+              <ul className="mb-3 space-y-1 text-sm">
+                {resultFiles.map((f) => (
+                  <li key={f.id} className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate">{f.type === "PREVIEW" ? "🖼️ Pratinjau" : "🔒 File asli"}: {f.filename}</span>
+                    <button className="btn-ghost !px-2 !py-1 text-xs" onClick={() => downloadAuthed(`/orders/${id}/files/${f.id}/download`, f.filename).catch((e) => setFlash({ ok: false, text: (e as Error).message }))}>Unduh</button>
+                  </li>
+                ))}
+              </ul>
+            )}
             {resultNotes.map((n) => <p key={n.id} className="mb-2 rounded bg-slate-50 p-2 text-xs text-slate-600">📝 {n.value}</p>)}
-            <label className="label">File hasil</label>
+
+            <label className="label">File hasil pekerjaan</label>
             <FileButton className="mb-1 w-full" label={<>📎 {file ? "Ganti file" : "Pilih file hasil"}</>} onFiles={(f) => setFile(f[0] ?? null)} />
             {file && <p className="mb-2 truncate text-xs text-slate-500">{file.name} ({fmtSize(file.size)})</p>}
-            <div className="mb-3" />
+            <p className="mb-3 mt-1 text-[11px] text-slate-400">Pratinjau dibuat <b>otomatis</b> dari file ini (gambar, PDF, teks/kode). Untuk Word/PPT/ZIP, customer melihat kartu terkunci; ekspor ke PDF bila ingin pratinjau isi.</p>
             <label className="mb-1 block text-xs font-semibold text-slate-500">ATAU LINK HASIL (Drive/GitHub/dll)</label>
             <input className="input mb-3" placeholder="https://…" value={resultLink} onChange={(e) => setResultLink(e.target.value)} />
+            <label className="mb-1 block text-xs font-semibold text-slate-500">TAMBAH SCREENSHOT PRATINJAU (opsional, maks. 3)</label>
+            <FileButton multiple accept="image/png,image/jpeg,image/webp" className="mb-3 w-full" label={<>🖼️ {previewFiles.length ? `${previewFiles.length} gambar dipilih` : "Pilih screenshot tambahan"}</>} onFiles={(f) => setPreviewFiles(f.slice(0, 3))} />
             <label className="mb-1 block text-xs font-semibold text-slate-500">CATATAN (ikut terkirim ke customer)</label>
             <textarea className="input mb-3" rows={3} placeholder="mis. Cara menjalankan, versi, atau info revisi" value={resultNote} onChange={(e) => setResultNote(e.target.value)} />
             <button
               className="btn-primary w-full"
-              disabled={busy || (!file && !resultLink.trim())}
+              disabled={busy || building || (!file && !resultLink.trim()) || (!fullyPaid && paidTotal === 0)}
               onClick={() => run(async () => {
                 const fd = new FormData();
                 if (file) fd.append("file", file);
                 if (resultLink.trim()) fd.append("resultLink", resultLink.trim());
                 if (resultNote.trim()) fd.append("note", resultNote.trim());
+                const label = `KETUPAT • #${o.orderNumber} • PRATINJAU`;
+                setBuilding(true);
+                let info = "";
+                try {
+                  const auto = await buildResultPreviews({ file, link: resultLink.trim(), label });
+                  info = auto.info;
+                  for (const f of auto.files) fd.append("previews", f);
+                  for (const p of previewFiles) fd.append("previews", await makeWatermarkedPreview(p, label));
+                } finally {
+                  setBuilding(false);
+                }
                 await api(`/orders/${id}/result`, { method: "POST", body: fd });
-                setFile(null); setResultLink(""); setResultNote("");
-              }, "Hasil terkirim, order SELESAI & customer diberi tahu.")}
+                setFile(null); setResultLink(""); setResultNote(""); setPreviewFiles([]);
+                setPreviewInfo(info);
+              }, fullyPaid ? "Hasil terkirim, order SELESAI & customer diberi tahu." : "Hasil terkirim: pratinjau terlihat customer, file asli terkunci sampai pelunasan.")}
             >
-              Kirim Hasil & Tandai Selesai
+              {building ? "Membuat pratinjau…" : fullyPaid ? "Kirim Hasil & Tandai Selesai" : "Kirim Hasil & Tagih Pelunasan"}
             </button>
+            {previewInfo && <p className="mt-2 rounded bg-slate-50 p-2 text-xs text-slate-600">ℹ️ {previewInfo}</p>}
+            {!fullyPaid && paidTotal === 0 && <p className="mt-2 text-xs text-amber-600">DP {rupiah(dpAmount)} belum diverifikasi, jadi hasil belum bisa dikirim.</p>}
           </section>
 
           <section className="card p-4 md:p-5">

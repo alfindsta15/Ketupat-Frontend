@@ -7,6 +7,7 @@ const STATUS_STYLE: Record<string, string> = {
   PAYMENT_REVIEW: "bg-purple-100 text-purple-700",
   PAID: "bg-emerald-100 text-emerald-700",
   PROCESSING: "bg-blue-100 text-blue-700",
+  WAITING_FINAL_PAYMENT: "bg-fuchsia-100 text-fuchsia-700",
   REVIEW: "bg-indigo-100 text-indigo-700",
   COMPLETED: "bg-green-100 text-green-700",
   CANCELLED: "bg-red-100 text-red-700",
@@ -122,5 +123,15 @@ export function FileButton({
       />
       {label}
     </label>
+  );
+}
+
+/** Label jenis pembayaran: DP 50% / Pelunasan (pembayaran lama = tanpa label). */
+export function KindTag({ kind }: { kind?: string | null }) {
+  if (kind !== "DP" && kind !== "FINAL") return null;
+  return (
+    <span className={`ml-1.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${kind === "DP" ? "bg-sky-100 text-sky-700" : "bg-fuchsia-100 text-fuchsia-700"}`}>
+      {kind === "DP" ? "DP 50%" : "PELUNASAN"}
+    </span>
   );
 }
